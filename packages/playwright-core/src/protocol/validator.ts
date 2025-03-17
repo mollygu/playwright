@@ -305,7 +305,7 @@ scheme.LocalUtilsHarLookupResult = tObject({
   message: tOptional(tString),
   redirectURL: tOptional(tString),
   status: tOptional(tNumber),
-  headers: tOptional(tArray(tType('NameValue'))),
+  headers: tArray(tType('NameValue')),
   body: tOptional(tBinary),
 });
 scheme.LocalUtilsHarCloseParams = tObject({

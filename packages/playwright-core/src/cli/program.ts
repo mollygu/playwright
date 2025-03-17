@@ -70,6 +70,7 @@ commandWithOpenOptions('codegen [url]', 'open page and generate code for user ac
       ['-o, --output <file name>', 'saves the generated script to a file'],
       ['--target <language>', `language to generate, one of javascript, playwright-test, python, python-async, python-pytest, csharp, csharp-mstest, csharp-nunit, java, java-junit`, codegenId()],
       ['--test-id-attribute <attributeName>', 'use the specified attribute to generate data test ID selectors'],
+      ['--snapshots-dir <dir>', 'directory to save page snapshots during recording'],
     ]).action(function(url, options) {
   codegen(options, url).catch(logErrorAndExit);
 }).addHelpText('afterAll', `
@@ -77,7 +78,8 @@ Examples:
 
   $ codegen
   $ codegen --target=python
-  $ codegen -b webkit https://example.com`);
+  $ codegen -b webkit https://example.com
+  $ codegen --snapshots-dir=snapshots`);
 
 function suggestedBrowsersToInstall() {
   return registry.executables().filter(e => e.installType !== 'none' && e.type !== 'tool').map(e => e.name).join(', ');
@@ -356,6 +358,7 @@ type Options = {
   saveHar?: string;
   saveHarGlob?: string;
   saveStorage?: string;
+  snapshotsDir?: string;
   timeout: string;
   timezone?: string;
   viewportSize?: string;
@@ -595,6 +598,7 @@ async function codegen(options: Options & { target: string, output?: string, tes
     testIdAttributeName,
     outputFile: outputFile ? path.resolve(outputFile) : undefined,
     handleSIGINT: false,
+    snapshotsDir: options.snapshotsDir,
   });
   await openPage(context, url);
 }
@@ -696,6 +700,7 @@ function commandWithOpenOptions(command: string, description: string, options: a
       .option('--save-har <filename>', 'save HAR file with all network activity at the end')
       .option('--save-har-glob <glob pattern>', 'filter entries in the HAR by matching url against this glob pattern')
       .option('--save-storage <filename>', 'save context storage state at the end, for later use with --load-storage')
+      .option('--snapshots-dir <dirname>', 'save page snapshots in the specified directory')
       .option('--timezone <time zone>', 'time zone to emulate, for example "Europe/Rome"')
       .option('--timeout <timeout>', 'timeout for Playwright actions in milliseconds, no timeout by default')
       .option('--user-agent <ua string>', 'specify user agent string')

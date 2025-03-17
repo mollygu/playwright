@@ -15,6 +15,8 @@
  */
 
 import { EventEmitter } from 'events';
+import fs from 'fs';
+import path from 'path';
 
 import { RecorderCollection } from './recorderCollection';
 import * as recorderSource from '../../generated/pollingRecorderSource';
@@ -26,6 +28,7 @@ import { Frame } from '../frames';
 import { Page } from '../page';
 import { ThrottledFile } from './throttledFile';
 import { generateCode } from '../codegen/language';
+import { serverSideCallMetadata } from '../instrumentation';
 
 import type { RegisteredListener } from '../../utils';
 import type { Language, LanguageGenerator, LanguageGeneratorOptions } from '../codegen/types';
@@ -57,6 +60,10 @@ export class ContextRecorder extends EventEmitter {
   private _throttledOutputFile: ThrottledFile | null = null;
   private _orderedLanguages: LanguageGenerator[] = [];
   private _listeners: RegisteredListener[] = [];
+  private _initialPageCaptured = false;
+  private _sessionName: string;
+  private _actionCounter = 0;
+  private _sessionId: string;
 
   constructor(context: BrowserContext, params: channels.BrowserContextEnableRecorderParams, delegate: ContextRecorderDelegate) {
     super();
@@ -66,6 +73,12 @@ export class ContextRecorder extends EventEmitter {
     this._recorderSources = [];
     const language = params.language || context.attribution.playwright.options.sdkLanguage;
     this.setOutput(language, params.outputFile);
+    
+    // Use browser context ID if available, or generate a random ID
+    this._sessionId = context._browserContextId || `sid-${Math.random().toString(36).substring(2, 10)}`;
+    
+    // Generate a session name based on timestamp and session ID
+    this._sessionName = `session-${this._sessionId}-${new Date().toISOString().replace(/[:.]/g, '-')}`;
 
     // Make a copy of options to modify them later.
     const languageGeneratorOptions: LanguageGeneratorOptions = {
@@ -171,15 +184,49 @@ export class ContextRecorder extends EventEmitter {
       });
       this._pageAliases.delete(page);
     });
+    
+    // Listen for frame navigation events
     frame.on(Frame.Events.InternalNavigation, event => {
       if (event.isPublic)
         this._onFrameNavigated(frame, page);
     });
+    
+    // Listen for downloads
     page.on(Page.Events.Download, () => this._onDownload(page));
+    
+    // Set page alias
     const suffix = this._pageAliases.size ? String(++this._lastPopupOrdinal) : '';
     const pageAlias = 'page' + suffix;
     this._pageAliases.set(page, pageAlias);
+    
+    // For the first page, also listen for load events to capture initial state
+    if (this._context.pages().length === 1 && !this._initialPageCaptured) {
+      // Listen for the load event to capture initial state
+      page.once('load', async () => {
+        // Wait a bit after load to ensure the page is fully rendered
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        if (!this._initialPageCaptured) {
+          try {
+            console.log('Capturing initial page state after load event:', frame.url());
+            // Create a dummy action for the initial page
+            const initialAction: actions.Action = {
+              name: 'navigate',
+              url: frame.url(),
+              signals: []
+            };
+            
+            // Use the improved _savePageSnapshot method with 'initial' prefix
+            await this._savePageSnapshot(frame, initialAction, 'initial');
+            this._initialPageCaptured = true;
+          } catch (error) {
+            console.error('Error capturing initial page state after load:', error);
+          }
+        }
+      });
+    }
 
+    // Record page creation
     if (page.opener()) {
       this._onPopup(page.opener()!, page);
     } else {
@@ -238,14 +285,163 @@ export class ContextRecorder extends EventEmitter {
   }
 
   private async _performAction(frame: Frame, action: actions.PerformOnRecordAction) {
-    await this._collection.performAction(await this._createActionInContext(frame, action));
+    // Capture page state before action
+    const beforeState = await this._capturePageState(frame);
+    
+    // Perform the action
+    const actionInContext = await this._createActionInContext(frame, action);
+    await this._collection.performAction(actionInContext);
+    
+    // Wait a moment for any action-triggered changes to complete
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // Capture page state after action and compare
+    const afterState = await this._capturePageState(frame);
+    if (this._hasStateChanged(beforeState, afterState)) {
+      await this._savePageSnapshot(frame, action);
+    }
   }
 
   private async _recordAction(frame: Frame, action: actions.Action) {
     this._collection.addRecordedAction(await this._createActionInContext(frame, action));
   }
 
-  private _onFrameNavigated(frame: Frame, page: Page) {
+  private async _capturePageState(frame: Frame): Promise<{ html: string, url: string }> {
+    try {
+      const page = frame._page;
+      const html = await frame.content();
+      const url = page.mainFrame().url();
+      return { html, url };
+    } catch (error) {
+      console.error('Error capturing page state:', error);
+      return { html: '', url: '' };
+    }
+  }
+
+  private _hasStateChanged(beforeState: { html: string, url: string }, afterState: { html: string, url: string }): boolean {
+    // Check if URL has changed
+    if (beforeState.url !== afterState.url) {
+      return true;
+    }
+    
+    // Simple HTML comparison - ignore minor differences that don't affect the page structure
+    // Remove dynamic content like timestamps, random IDs, etc.
+    const normalizeHtml = (html: string) => {
+      return html
+        .replace(/\s+/g, ' ')                // Normalize whitespace
+        .replace(/<!--.*?-->/g, '')          // Remove comments
+        .replace(/\sdata-[-\w]+=["'][^"']*["']/g, '') // Remove data attributes
+        .replace(/\sid=["'][^"']*["']/g, '') // Remove IDs
+        .trim();
+    };
+    
+    const normalizedBefore = normalizeHtml(beforeState.html);
+    const normalizedAfter = normalizeHtml(afterState.html);
+    
+    // If the normalized HTML differs significantly, consider it changed
+    // This helps avoid capturing snapshots for minor DOM changes
+    if (normalizedBefore !== normalizedAfter) {
+      // Calculate a simple difference ratio
+      const maxLength = Math.max(normalizedBefore.length, normalizedAfter.length);
+      let diffCount = 0;
+      
+      for (let i = 0; i < Math.min(normalizedBefore.length, normalizedAfter.length); i++) {
+        if (normalizedBefore[i] !== normalizedAfter[i]) {
+          diffCount++;
+        }
+      }
+      
+      diffCount += Math.abs(normalizedBefore.length - normalizedAfter.length);
+      const diffRatio = diffCount / maxLength;
+      
+      // Only consider it changed if the difference is significant (more than 1%)
+      return diffRatio > 0.01;
+    }
+    
+    return false;
+  }
+
+  private async _savePageSnapshot(frame: Frame, action: actions.Action, prefix?: string) {
+    try {
+      const page = frame._page;
+      
+      // Get current timestamp for the filename
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      
+      // For initial page, use "00-initial" as action number
+      // For regular actions, use padded numbers like "01-click", "02-fill" to ensure proper sorting
+      let actionNumber;
+      let actionDescription = '';
+      
+      if (prefix === 'initial') {
+        actionNumber = '00-initial';
+      } else {
+        // Increment counter and pad with leading zeros (01, 02, etc.)
+        this._actionCounter++;
+        const paddedCounter = String(this._actionCounter).padStart(2, '0');
+        
+        // Add action name to the filename for better identification
+        actionDescription = `-${action.name}`;
+        actionNumber = `${paddedCounter}${actionDescription}`;
+      }
+      
+      // Use the snapshotsDir parameter if provided, otherwise use default "playwright-snapshots"
+      const baseDir = this._params.snapshotsDir || 'playwright-snapshots';
+      
+      // Use session name for the folder
+      const snapshotDir = path.join(baseDir, this._sessionName);
+      
+      // Create directory if it doesn't exist (create parent directories as needed)
+      fs.mkdirSync(baseDir, { recursive: true });
+      fs.mkdirSync(snapshotDir, { recursive: true });
+      
+      // Save HTML content with improved naming
+      const content = await frame.content();
+      const htmlPath = path.join(snapshotDir, `${actionNumber}-${timestamp}.html`);
+      fs.writeFileSync(htmlPath, content);
+      
+      // Take screenshot with matching filename
+      const metadata = serverSideCallMetadata();
+      const screenshotOptions = { fullPage: true };
+      const screenshotBuffer = await page.screenshot(metadata, screenshotOptions);
+      const screenshotPath = path.join(snapshotDir, `${actionNumber}-${timestamp}.png`);
+      fs.writeFileSync(screenshotPath, screenshotBuffer);
+      
+      if (prefix === 'initial') {
+        console.log(`Saved initial page snapshot to ${snapshotDir}/${actionNumber}-${timestamp}.html`);
+      } else {
+        console.log(`Saved page snapshot for ${action.name} to ${snapshotDir}/${actionNumber}-${timestamp}.html`);
+      }
+    } catch (error) {
+      console.error('Error saving page snapshot:', error);
+    }
+  }
+
+  private async _onFrameNavigated(frame: Frame, page: Page) {
+    // Capture initial page state on first navigation
+    if (!this._initialPageCaptured && frame === page.mainFrame()) {
+      try {
+        console.log('Capturing initial page state on navigation to:', frame.url());
+        
+        // Wait for the page to be fully loaded before capturing the initial state
+        // Use setTimeout to give the page time to render and load resources
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Create a dummy action for the initial page
+        const initialAction: actions.Action = {
+          name: 'navigate',
+          url: frame.url(),
+          signals: []
+        };
+        
+        // Use the improved _savePageSnapshot method with 'initial' prefix
+        await this._savePageSnapshot(frame, initialAction, 'initial');
+        this._initialPageCaptured = true;
+      } catch (error) {
+        console.error('Error capturing initial page state:', error);
+      }
+    }
+
     const pageAlias = this._pageAliases.get(page);
     this._collection.signal(pageAlias!, frame, { name: 'navigation', url: frame.url() });
   }

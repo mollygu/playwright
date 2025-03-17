@@ -1841,6 +1841,7 @@ export type BrowserContextEnableRecorderParams = {
   outputFile?: string,
   handleSIGINT?: boolean,
   omitCallTracking?: boolean,
+  snapshotsDir?: string,
 };
 export type BrowserContextEnableRecorderOptions = {
   language?: string,

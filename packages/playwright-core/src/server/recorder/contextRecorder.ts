@@ -407,6 +407,11 @@ export class ContextRecorder extends EventEmitter {
       const screenshotPath = path.join(snapshotDir, `${actionNumber}-${timestamp}.png`);
       fs.writeFileSync(screenshotPath, screenshotBuffer);
       
+      // Capture and save aria snapshot
+      const ariaSnapshot = await frame.ariaSnapshot(metadata, 'html', { ref: true });
+      const ariaPath = path.join(snapshotDir, `${actionNumber}-${timestamp}.aria.txt`);
+      fs.writeFileSync(ariaPath, ariaSnapshot);
+      
       if (prefix === 'initial') {
         console.log(`Saved initial page snapshot to ${snapshotDir}/${actionNumber}-${timestamp}.html`);
       } else {

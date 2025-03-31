@@ -199,7 +199,22 @@ export class ContextRecorder extends EventEmitter {
     const suffix = this._pageAliases.size ? String(++this._lastPopupOrdinal) : '';
     const pageAlias = 'page' + suffix;
     this._pageAliases.set(page, pageAlias);
-    
+
+    // Record page creation
+    if (page.opener()) {
+      this._onPopup(page.opener()!, page);
+    } else {
+      this._collection.addRecordedAction({
+        frame: this._describeMainFrame(page),
+        action: {
+          name: 'openPage',
+          url: page.mainFrame().url(),
+          signals: [],
+        },
+        startTime: monotonicTime()
+      });
+    }
+
     // For the first page, also listen for load events to capture initial state
     if (this._context.pages().length === 1 && !this._initialPageCaptured) {
       // Listen for the load event to capture initial state
@@ -230,21 +245,6 @@ export class ContextRecorder extends EventEmitter {
             this._isCapturingInitialPage = false;  // Release lock
           }
         }
-      });
-    }
-
-    // Record page creation
-    if (page.opener()) {
-      this._onPopup(page.opener()!, page);
-    } else {
-      this._collection.addRecordedAction({
-        frame: this._describeMainFrame(page),
-        action: {
-          name: 'openPage',
-          url: page.mainFrame().url(),
-          signals: [],
-        },
-        startTime: monotonicTime()
       });
     }
   }

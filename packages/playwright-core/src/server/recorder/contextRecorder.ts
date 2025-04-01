@@ -29,6 +29,7 @@ import { Page } from '../page';
 import { ThrottledFile } from './throttledFile';
 import { generateCode } from '../codegen/language';
 import { serverSideCallMetadata } from '../instrumentation';
+import { ProgressController } from '../progress';
 
 import type { RegisteredListener } from '../../utils';
 import type { Language, LanguageGenerator, LanguageGeneratorOptions } from '../codegen/types';
@@ -65,6 +66,8 @@ export class ContextRecorder extends EventEmitter {
   private _sessionName: string;
   private _actionCounter = 0;
   private _sessionId: string;
+  private _lastNavigationTimestamp = 0;
+  private _lastSnapshotTimestamp = 0;
 
   constructor(context: BrowserContext, params: channels.BrowserContextEnableRecorderParams, delegate: ContextRecorderDelegate) {
     super();
@@ -185,22 +188,16 @@ export class ContextRecorder extends EventEmitter {
       });
       this._pageAliases.delete(page);
     });
-    
-    // Listen for frame navigation events
     frame.on(Frame.Events.InternalNavigation, event => {
+      console.log('Internal navigation event:', frame.url());
       if (event.isPublic)
         this._onFrameNavigated(frame, page);
     });
-    
-    // Listen for downloads
     page.on(Page.Events.Download, () => this._onDownload(page));
-    
-    // Set page alias
     const suffix = this._pageAliases.size ? String(++this._lastPopupOrdinal) : '';
     const pageAlias = 'page' + suffix;
     this._pageAliases.set(page, pageAlias);
 
-    // Record page creation
     if (page.opener()) {
       this._onPopup(page.opener()!, page);
     } else {
@@ -212,39 +209,6 @@ export class ContextRecorder extends EventEmitter {
           signals: [],
         },
         startTime: monotonicTime()
-      });
-    }
-
-    // For the first page, also listen for load events to capture initial state
-    if (this._context.pages().length === 1 && !this._initialPageCaptured) {
-      // Listen for the load event to capture initial state
-      page.once('load', async () => {
-        // Check both flags atomically
-        if (!this._initialPageCaptured && !this._isCapturingInitialPage) {
-          this._isCapturingInitialPage = true;  // Set lock
-          try {
-            // Wait a bit after load to ensure the page is fully rendered
-            await new Promise(resolve => setTimeout(resolve, 10000));
-            
-            if (!this._initialPageCaptured) {  // Double-check after wait
-              console.log('Capturing initial page state after load event:', frame.url());
-              // Create a dummy action for the initial page
-              const initialAction: actions.Action = {
-                name: 'navigate',
-                url: frame.url(),
-                signals: []
-              };
-              
-              // Use the improved _savePageSnapshot method with 'initial' prefix
-              await this._savePageSnapshot(frame, initialAction, 'initial');
-              this._initialPageCaptured = true;
-            }
-          } catch (error) {
-            console.error('Error capturing initial page state after load:', error);
-          } finally {
-            this._isCapturingInitialPage = false;  // Release lock
-          }
-        }
       });
     }
   }
@@ -292,20 +256,22 @@ export class ContextRecorder extends EventEmitter {
   }
 
   private async _performAction(frame: Frame, action: actions.PerformOnRecordAction) {
-    // Capture page state before action
     const beforeState = await this._capturePageState(frame);
-    
-    // Perform the action
     const actionInContext = await this._createActionInContext(frame, action);
     await this._collection.performAction(actionInContext);
     
-    // Wait a moment for any action-triggered changes to complete
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 1500));
     
-    // Capture page state after action and compare
     const afterState = await this._capturePageState(frame);
     if (this._hasStateChanged(beforeState, afterState)) {
+      const now = Date.now();
+      // Skip if we just took a snapshot (within last 2 seconds)
+      if (now - this._lastSnapshotTimestamp < 2000) {
+        console.log('_performAction:  skipping the snapshot one');
+        return;
+      }
       await this._savePageSnapshot(frame, action);
+      this._lastSnapshotTimestamp = Date.now();
     }
   }
 
@@ -430,32 +396,54 @@ export class ContextRecorder extends EventEmitter {
   }
 
   private async _onFrameNavigated(frame: Frame, page: Page) {
-    // Only capture initial page state if we haven't already captured it from the load event
-    if (!this._initialPageCaptured && !this._isCapturingInitialPage && frame === page.mainFrame()) {
-      this._isCapturingInitialPage = true;  // Set lock
-      try {
-        console.log('Capturing initial page state on navigation to:', frame.url());
+    const now = Date.now();
+    // Skip if we just took a snapshot from _performAction (within last 2 seconds)
+    if (now - this._lastSnapshotTimestamp < 2000) {
+        //Naviaget snapshot can happen both in _performAction and _onFrameNavigated,
+        console.log('_onFrameNavigated:  skipping the snapshot one');
+        return;
+    }
+    
+    try {
+        console.log('Navigated to:', frame.url());
+        console.log('Capturing page state on navigation to:', frame.url());
+        this._lastSnapshotTimestamp = now;
+        // Create a progress controller for load state waiting
+        const progress = new ProgressController(serverSideCallMetadata(), frame);
         
-        // Wait for the page to be fully loaded before capturing the initial state
-        await new Promise(resolve => setTimeout(resolve, 8000));
-        
-        if (!this._initialPageCaptured) {  // Double-check after wait
-          // Create a dummy action for the initial page
-          const initialAction: actions.Action = {
-            name: 'navigate',
-            url: frame.url(),
-            signals: []
-          };
-          
-          // Use the improved _savePageSnapshot method with 'initial' prefix
-          await this._savePageSnapshot(frame, initialAction, 'initial');
-          this._initialPageCaptured = true;
+        try {
+          await progress.run(async progress => {
+            await Promise.race([
+              // Main loading states with timeout
+              Promise.all([
+                frame._waitForLoadState(progress, 'domcontentloaded'),
+                frame._waitForLoadState(progress, 'load')
+              ]).then(async () => {
+                // Give a small grace period for any immediate post-load operations
+                await new Promise(resolve => setTimeout(resolve,  1500));
+              }),
+              // Timeout after 30 seconds
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Load timeout')), 30000))
+            ]);
+          });
+        } catch (error) {
+          if (error.message === 'Load timeout') {
+            console.log('Load state timeout reached, proceeding with snapshot');
+          } else {
+            throw error;
+          }
         }
-      } catch (error) {
-        console.error('Error capturing initial page state:', error);
-      } finally {
-        this._isCapturingInitialPage = false;  // Release lock
-      }
+        
+        const currentAction: actions.Action = {
+          name: 'navigate',
+          url: frame.url(),
+          signals: [],
+        };
+        await this._savePageSnapshot(frame, currentAction);
+        
+        
+    } catch (error) {
+      console.error('Error capturing page state:', error);
     }
 
     const pageAlias = this._pageAliases.get(page);

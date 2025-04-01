@@ -65,6 +65,7 @@ export class ContextRecorder extends EventEmitter {
   private _actionCounter = 0;
   private _sessionId: string;
   private _lastSnapshotTimestamp = 0;
+  private _snapshotTimeGap = 2000;
 
   constructor(context: BrowserContext, params: channels.BrowserContextEnableRecorderParams, delegate: ContextRecorderDelegate) {
     super();
@@ -186,7 +187,6 @@ export class ContextRecorder extends EventEmitter {
       this._pageAliases.delete(page);
     });
     frame.on(Frame.Events.InternalNavigation, event => {
-      console.log('Internal navigation event:', frame.url());
       if (event.isPublic)
         this._onFrameNavigated(frame, page);
     });
@@ -260,13 +260,15 @@ export class ContextRecorder extends EventEmitter {
     await new Promise(resolve => setTimeout(resolve, 1500));
     
     const afterState = await this._capturePageState(frame);
+    console.log('Now comparing state to decide if snapshot is needed');
     if (this._hasStateChanged(beforeState, afterState)) {
       const now = Date.now();
       // Skip if we just took a snapshot (within last 2 seconds)
-      if (now - this._lastSnapshotTimestamp < 2000) {
+      if (now - this._lastSnapshotTimestamp < this._snapshotTimeGap) {
         console.log('_performAction:  skipping the snapshot one');
         return;
       }
+      console.log('_performAction:  taking the snapshot');
       await this._savePageSnapshot(frame, action);
       this._lastSnapshotTimestamp = Date.now();
     }
@@ -333,6 +335,7 @@ export class ContextRecorder extends EventEmitter {
 
   private async _savePageSnapshot(frame: Frame, action: actions.Action, prefix?: string) {
     try {
+      console.log('Saving page snapshot for:', action.name+'-->');
       const page = frame._page;
       
       // Get current timestamp for the filename
@@ -343,17 +346,13 @@ export class ContextRecorder extends EventEmitter {
       let actionNumber;
       let actionDescription = '';
       
-      if (prefix === 'initial') {
-        actionNumber = '00-initial';
-      } else {
-        // Increment counter and pad with leading zeros (01, 02, etc.)
-        this._actionCounter++;
-        const paddedCounter = String(this._actionCounter).padStart(2, '0');
-        
-        // Add action name to the filename for better identification
-        actionDescription = `-${action.name}`;
-        actionNumber = `${paddedCounter}${actionDescription}`;
-      }
+      // Increment counter and pad with leading zeros (01, 02, etc.)
+      this._actionCounter++;
+      const paddedCounter = String(this._actionCounter).padStart(2, '0');
+      
+      // Add action name to the filename for better identification
+      actionDescription = `-${action.name}`;
+      actionNumber = `${paddedCounter}${actionDescription}`;
       
       // Use the snapshotsDir parameter if provided, otherwise use default "playwright-snapshots"
       const baseDir = this._params.snapshotsDir || 'playwright-snapshots';
@@ -369,42 +368,30 @@ export class ContextRecorder extends EventEmitter {
       const content = await frame.content();
       const htmlPath = path.join(snapshotDir, `${actionNumber}-${timestamp}.html`);
       fs.writeFileSync(htmlPath, content);
-      
+      console.log(`  Saved page snapshot for ${action.name} to ${snapshotDir}/${actionNumber}-${timestamp}.html`);
+
       // Take screenshot with matching filename
       const metadata = serverSideCallMetadata();
       const screenshotOptions = { fullPage: true };
       const screenshotBuffer = await page.screenshot(metadata, screenshotOptions);
       const screenshotPath = path.join(snapshotDir, `${actionNumber}-${timestamp}.png`);
       fs.writeFileSync(screenshotPath, screenshotBuffer);
-      
+      console.log(`  Saved page snapshot for ${action.name} to ${snapshotDir}/${actionNumber}-${timestamp}.png`);
+
       // Capture and save aria snapshot
       const ariaSnapshot = await frame.ariaSnapshot(metadata, 'html', { ref: true });
       const ariaPath = path.join(snapshotDir, `${actionNumber}-${timestamp}.aria.txt`);
       fs.writeFileSync(ariaPath, ariaSnapshot);
       
-      if (prefix === 'initial') {
-        console.log(`Saved initial page snapshot to ${snapshotDir}/${actionNumber}-${timestamp}.html`);
-      } else {
-        console.log(`Saved page snapshot for ${action.name} to ${snapshotDir}/${actionNumber}-${timestamp}.html`);
-      }
+      console.log(`  Saved page snapshot for ${action.name} to ${snapshotDir}/${actionNumber}-${timestamp}.aria.txt`);
+
     } catch (error) {
       console.error('Error saving page snapshot:', error);
     }
   }
 
   private async _onFrameNavigated(frame: Frame, page: Page) {
-    const now = Date.now();
-    // Skip if we just took a snapshot from _performAction (within last 2 seconds)
-    if (now - this._lastSnapshotTimestamp < 2000) {
-        //Naviaget snapshot can happen both in _performAction and _onFrameNavigated,
-        console.log('_onFrameNavigated:  skipping the snapshot one');
-        return;
-    }
-    
     try {
-        console.log('Navigated to:', frame.url());
-        console.log('Capturing page state on navigation to:', frame.url());
-        this._lastSnapshotTimestamp = now;
         // Create a progress controller for load state waiting
         const progress = new ProgressController(serverSideCallMetadata(), frame);
         
@@ -430,7 +417,17 @@ export class ContextRecorder extends EventEmitter {
             throw error;
           }
         }
-        
+        const now = Date.now();
+        // Skip if we just took a snapshot from _performAction (within last 2 seconds)
+        if (now - this._lastSnapshotTimestamp < this._snapshotTimeGap) {
+            //Naviaget snapshot can happen both in _performAction and _onFrameNavigated,
+            console.log('_onFrameNavigated:  skipping the snapshot one');
+            return;
+        }
+        console.log('Navigated to:', frame.url());
+        console.log('Capturing page state on navigation to:', frame.url());
+        this._lastSnapshotTimestamp = now;
+
         const currentAction: actions.Action = {
           name: 'navigate',
           url: frame.url(),

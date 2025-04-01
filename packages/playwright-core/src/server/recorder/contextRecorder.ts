@@ -61,12 +61,9 @@ export class ContextRecorder extends EventEmitter {
   private _throttledOutputFile: ThrottledFile | null = null;
   private _orderedLanguages: LanguageGenerator[] = [];
   private _listeners: RegisteredListener[] = [];
-  private _initialPageCaptured = false;
-  private _isCapturingInitialPage = false;
   private _sessionName: string;
   private _actionCounter = 0;
   private _sessionId: string;
-  private _lastNavigationTimestamp = 0;
   private _lastSnapshotTimestamp = 0;
 
   constructor(context: BrowserContext, params: channels.BrowserContextEnableRecorderParams, delegate: ContextRecorderDelegate) {

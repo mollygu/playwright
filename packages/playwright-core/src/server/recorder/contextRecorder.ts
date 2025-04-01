@@ -268,9 +268,9 @@ export class ContextRecorder extends EventEmitter {
         console.log('_performAction:  skipping the snapshot one');
         return;
       }
+      this._lastSnapshotTimestamp = Date.now();
       console.log('_performAction:  taking the snapshot');
       await this._savePageSnapshot(frame, action);
-      this._lastSnapshotTimestamp = Date.now();
     }
   }
 
@@ -364,12 +364,6 @@ export class ContextRecorder extends EventEmitter {
       fs.mkdirSync(baseDir, { recursive: true });
       fs.mkdirSync(snapshotDir, { recursive: true });
       
-      // Save HTML content with improved naming
-      const content = await frame.content();
-      const htmlPath = path.join(snapshotDir, `${actionNumber}-${timestamp}.html`);
-      fs.writeFileSync(htmlPath, content);
-      console.log(`  Saved page snapshot for ${action.name} to ${snapshotDir}/${actionNumber}-${timestamp}.html`);
-
       // Take screenshot with matching filename
       const metadata = serverSideCallMetadata();
       const screenshotOptions = { fullPage: true };
@@ -385,6 +379,13 @@ export class ContextRecorder extends EventEmitter {
       
       console.log(`  Saved page snapshot for ${action.name} to ${snapshotDir}/${actionNumber}-${timestamp}.aria.txt`);
 
+      // Save HTML content with improved naming
+      const content = await frame.content();
+      const htmlPath = path.join(snapshotDir, `${actionNumber}-${timestamp}.html`);
+      fs.writeFileSync(htmlPath, content);
+      console.log(`  Saved page snapshot for ${action.name} to ${snapshotDir}/${actionNumber}-${timestamp}.html`);
+
+      
     } catch (error) {
       console.error('Error saving page snapshot:', error);
     }

@@ -368,3 +368,119 @@ test('executable path', async ({ startClient }) => {
   });
   expect(response).toContainTextContent(`executable doesn't exist`);
 });
+
+test('browser_take_html_snippet - whole page', async ({ client }) => {
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: {
+      url: 'data:text/html,<html><title>HTML Test</title><body><div id="test">Hello, world!</div></body></html>',
+    },
+  });
+
+  const result = await client.callTool({
+    name: 'browser_take_html_snippet',
+    arguments: {},
+  });
+  
+  const content = result.content as Array<{type: string, text: string}>;
+  expect(content[0].text).toContain('```html');
+  expect(content[0].text).toContain('<html>');
+  expect(content[0].text).toContain('<title>');
+  expect(content[0].text).toContain('HTML Test');
+  expect(content[0].text).toContain('<div id="test">');
+  expect(content[0].text).toContain('Hello, world!');
+  // Check for formatting markers like indentation and line breaks
+  expect(content[0].text).toContain('\n');
+  expect(content[0].text.split('\n').length).toBeGreaterThan(5); // Multiple lines indicating formatting
+});
+
+test('browser_take_html_snippet - specific element', async ({ client }) => {
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: {
+      url: 'data:text/html,<html><title>HTML Test</title><body><div id="test">Hello, world!</div></body></html>',
+    },
+  });
+  
+  // First get a snapshot to get the element ref
+  const snapshot = await client.callTool({
+    name: 'browser_snapshot',
+    arguments: {},
+  });
+  
+  // Extract the ref from the snapshot
+  const snapshotContent = snapshot.content as Array<{type: string, text: string}>;
+  const match = snapshotContent[0].text.match(/div.*?\[ref=(s\d+e\d+)\]/);
+  const ref = match ? match[1] : null;
+  
+  expect(ref).toBeTruthy();
+  
+  // Get the inner HTML of the div
+  const innerResult = await client.callTool({
+    name: 'browser_take_html_snippet',
+    arguments: {
+      element: 'div element',
+      ref,
+      includeOuter: false,
+    },
+  });
+  
+  const innerContent = innerResult.content as Array<{type: string, text: string}>;
+  expect(innerContent[0].text).toBe('Hello, world!');
+  
+  // Get the outer HTML of the div
+  const outerResult = await client.callTool({
+    name: 'browser_take_html_snippet',
+    arguments: {
+      element: 'div element',
+      ref,
+      includeOuter: true,
+    },
+  });
+  
+  const outerContent = outerResult.content as Array<{type: string, text: string}>;
+  expect(outerContent[0].text).toBe('<div id="test">Hello, world!</div>');
+});
+
+test('browser_take_html_snippet - tag filtering', async ({ client }) => {
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: {
+      url: 'data:text/html,<html><head><meta name="test"><style>body{color:red;}</style><script>console.log("test");</script><link rel="stylesheet" href="#"></head><title>Filter Test</title><body><div id="test">Content</div></body></html>',
+    },
+  });
+
+  // Test with default filtering (meta, script, style, link)
+  const defaultResult = await client.callTool({
+    name: 'browser_take_html_snippet',
+    arguments: {},
+  });
+  
+  const defaultContent = defaultResult.content as Array<{type: string, text: string}>;
+  expect(defaultContent[0].text).toContain('```html');
+  expect(defaultContent[0].text).toContain('<title>Filter Test</title>');
+  expect(defaultContent[0].text).toContain('<div id="test">');
+  expect(defaultContent[0].text).toContain('Content');
+  expect(defaultContent[0].text).not.toContain('<meta name="test">');
+  expect(defaultContent[0].text).not.toContain('<style>');
+  expect(defaultContent[0].text).not.toContain('<script>');
+  expect(defaultContent[0].text).not.toContain('<link');
+  // Check for formatting markers
+  expect(defaultContent[0].text).toContain('\n');
+  expect(defaultContent[0].text.split('\n').length).toBeGreaterThan(5);
+  
+  // Test with custom filtering (only title)
+  const customResult = await client.callTool({
+    name: 'browser_take_html_snippet',
+    arguments: {
+      filterTags: ['title'],
+    },
+  });
+  
+  const customContent = customResult.content as Array<{type: string, text: string}>;
+  expect(customContent[0].text).not.toContain('<title>');
+  expect(customContent[0].text).toContain('<meta name="test">');
+  expect(customContent[0].text).toContain('<style>');
+  expect(customContent[0].text).toContain('<script>');
+  expect(customContent[0].text).toContain('<div id="test">Content</div>');
+});

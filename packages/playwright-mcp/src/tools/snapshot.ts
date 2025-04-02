@@ -153,3 +153,139 @@ export const screenshot: Tool = {
     };
   },
 };
+
+const htmlSnippetSchema = z.object({
+  element: z.string().describe('Human-readable element description used to obtain permission to interact with the element').optional(),
+  ref: z.string().describe('Exact target element reference from the page snapshot').optional(),
+  includeOuter: z.boolean().describe('Whether to include the outer HTML of the selected element. Default is false.').optional(),
+  filterTags: z.array(z.string()).describe('List of HTML tag names to filter out from the result. Default removes meta, script, style, and link tags.').optional(),
+});
+
+export const htmlSnippet: Tool = {
+  schema: {
+    name: 'browser_take_html_snippet',
+    description: 'Retrieve the HTML content of the current page or a specific element',
+    inputSchema: zodToJsonSchema(htmlSnippetSchema),
+  },
+
+  handle: async (context, params) => {
+    const validatedParams = htmlSnippetSchema.parse(params);
+    const page = context.existingPage();
+    
+    let html: string;
+    
+    if (validatedParams.ref) {
+      // Get HTML of a specific element
+      const locator = context.refLocator(validatedParams.ref);
+      if (validatedParams.includeOuter) {
+        html = await locator.evaluate((el) => el.outerHTML);
+      } else {
+        html = await locator.evaluate((el) => el.innerHTML);
+      }
+    } else {
+      // Get HTML of the entire page
+      html = await page.content();
+    }
+    
+    // Filter out specified tags
+    const tagsToFilter = validatedParams.filterTags || ['meta', 'script', 'style', 'link'];
+    
+    if (tagsToFilter.length > 0) {
+      html = await page.evaluate(
+        ({ htmlContent, tags }) => {
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(htmlContent, 'text/html');
+          
+          // Filter out each specified tag
+          for (const tag of tags) {
+            const elements = doc.getElementsByTagName(tag);
+            // Remove elements from last to first to avoid index shifting
+            for (let i = elements.length - 1; i >= 0; i--) {
+              const element = elements[i];
+              element.parentNode?.removeChild(element);
+            }
+          }
+          
+          // Return serialized HTML
+          return doc.documentElement.outerHTML;
+        },
+        { htmlContent: html, tags: tagsToFilter }
+      );
+    }
+    
+    // Format the HTML for better readability
+    const formattedHtml = await page.evaluate(
+      ({ htmlContent }) => {
+        // Function to format HTML with proper indentation
+        function formatHTML(html: string): string {
+          let formatted = '';
+          let indent = '';
+          
+          // Helper function to get appropriate indent
+          const getIndent = () => {
+            let result = '';
+            for (let i = 0; i < indent.length; i++) {
+              result += ' ';
+            }
+            return result;
+          };
+          
+          // Parse the HTML into a document
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          
+          // Function to process a node recursively
+          function processNode(node: Node, level: number): void {
+            indent = '  '.repeat(level);
+            
+            if (node.nodeType === 3) { // Text node
+              const text = node.textContent?.trim() || '';
+              if (text) {
+                formatted += getIndent() + text + '\n';
+              }
+            } else if (node.nodeType === 1) { // Element node
+              const tagName = node.nodeName.toLowerCase();
+              
+              // Opening tag
+              formatted += getIndent() + '<' + tagName;
+              
+              // Attributes
+              const element = node as Element;
+              Array.from(element.attributes).forEach(attr => {
+                formatted += ' ' + attr.name + '="' + attr.value + '"';
+              });
+              
+              if (node.childNodes.length === 0) {
+                // Self-closing tag
+                formatted += ' />\n';
+              } else {
+                formatted += '>\n';
+                
+                // Process children
+                Array.from(node.childNodes).forEach(child => {
+                  processNode(child, level + 1);
+                });
+                
+                // Closing tag
+                formatted += getIndent() + '</' + tagName + '>\n';
+              }
+            }
+          }
+          
+          // Process the document element
+          if (doc.documentElement) {
+            processNode(doc.documentElement, 0);
+          }
+          
+          return formatted;
+        }
+        
+        return formatHTML(htmlContent);
+      },
+      { htmlContent: html }
+    );
+    
+    return {
+      content: [{ type: 'text', text: '```html\n' + formattedHtml + '```' }],
+    };
+  },
+};

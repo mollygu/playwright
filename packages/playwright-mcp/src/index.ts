@@ -45,6 +45,7 @@ const snapshotTools: Tool[] = [
   snapshot.type,
   snapshot.selectOption,
   snapshot.screenshot,
+  snapshot.htmlSnippet,
   ...commonTools,
 ];
 
@@ -66,6 +67,7 @@ const resources: Resource[] = [
 ];
 
 type Options = {
+  browserName?: 'chromium' | 'firefox' | 'webkit';
   userDataDir?: string;
   launchOptions?: LaunchOptions;
   cdpEndpoint?: string;

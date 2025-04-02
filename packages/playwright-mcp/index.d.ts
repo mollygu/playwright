@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Copyright (c) Microsoft Corporation.
  *
@@ -14,21 +15,26 @@
  * limitations under the License.
  */
 
-import { Server } from './server';
-import { wait, pressKey } from '../tools/common';
-import { navigate, snapshot, click, hover, type } from '../tools/snapshot';
+import type { LaunchOptions } from 'playwright';
+import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 
-const server = new Server({
-  name: 'Playwright snapshot-based browser server',
-  version: '0.0.1',
-  tools: [
-    navigate,
-    snapshot,
-    click,
-    hover,
-    type,
-    pressKey,
-    wait,
-  ]
-});
-server.start();
+type Options = {
+  /**
+   * Path to the user data directory.
+   */
+  userDataDir?: string;
+
+  /**
+   * Launch options for the browser.
+   */
+  launchOptions?: LaunchOptions;
+
+  /**
+   * Use screenshots instead of snapshots. Less accurate, reliable and overall
+   * slower, but contains visual representation of the page.
+   * @default false
+   */
+  vision?: boolean;
+};
+
+export function createServer(options?: Options): Server;

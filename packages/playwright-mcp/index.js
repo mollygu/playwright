@@ -15,4 +15,5 @@
  * limitations under the License.
  */
 
-require('./lib/program');
+const { createServer } = require('./lib/index');
+module.exports = { createServer };

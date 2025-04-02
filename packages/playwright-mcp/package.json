@@ -1,10 +1,10 @@
 {
   "name": "@playwright/mcp",
-  "version": "1.52.0-next",
+  "version": "0.0.9",
   "description": "Playwright Tools for MCP",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/microsoft/playwright.git"
+    "url": "git+https://github.com/microsoft/playwright-mcp.git"
   },
   "homepage": "https://playwright.dev",
   "engines": {
@@ -14,22 +14,43 @@
     "name": "Microsoft Corporation"
   },
   "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint .",
+    "watch": "tsc --watch",
+    "test": "playwright test",
+    "clean": "rm -rf lib",
+    "npm-publish": "npm run clean && npm run build && npm run test && npm publish"
+  },
   "exports": {
-    "./servers/server": "./lib/servers/server.js",
-    "./servers/screenshot": "./lib/servers/screenshot.js",
-    "./servers/snapshot": "./lib/servers/snapshot.js",
-    "./tools/common": "./lib/tools/common.js",
-    "./tools/screenshot": "./lib/tools/screenshot.js",
-    "./tools/snapshot": "./lib/tools/snapshot.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
   },
   "dependencies": {
-    "playwright": "1.52.0-next"
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "commander": "^13.1.0",
+    "playwright": "^1.52.0-alpha-1743163434000",
+    "yaml": "^2.7.1",
+    "zod-to-json-schema": "^3.24.4"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.6.1"
+    "@eslint/eslintrc": "^3.2.0",
+    "@eslint/js": "^9.19.0",
+    "@playwright/test": "^1.52.0-alpha-1743163434000",
+    "@stylistic/eslint-plugin": "^3.0.1",
+    "@types/node": "^22.13.10",
+    "@typescript-eslint/eslint-plugin": "^8.26.1",
+    "@typescript-eslint/parser": "^8.26.1",
+    "@typescript-eslint/utils": "^8.26.1",
+    "eslint": "^9.19.0",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-notice": "^1.0.0",
+    "typescript": "^5.8.2"
   },
   "bin": {
-    "mcp": "cli.js"
+    "mcp-server-playwright": "cli.js"
   }
 }

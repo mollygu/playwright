@@ -14,111 +14,266 @@
  * limitations under the License.
  */
 
-import { waitForCompletion } from '../utils';
+import os from 'os';
+import path from 'path';
+import fs from 'fs/promises';
 
-import type * as playwright from 'playwright';
-import type { ImageContent, TextContent } from '@modelcontextprotocol/sdk/types';
+import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 
-export type ToolContext = {
-  page: playwright.Page;
-};
+import { captureAriaSnapshot, runAndWait, sanitizeForFilePath } from './utils';
 
-export type ToolSchema = {
-  name: string;
-  description: string;
-  inputSchema: Record<string, any>;
-};
+import type { ToolFactory, Tool } from './tool';
 
-export type ToolResult = {
-  content: (ImageContent | TextContent)[];
-  isError?: boolean;
-};
 
-export type Tool = {
-  schema: ToolSchema;
-  handle: (context: ToolContext, params?: Record<string, any>) => Promise<ToolResult>;
-};
+const saveCookiesSchema = z.object({
+  cookiesPath: z.string().describe('The path to save the cookies.json file'),
+});
 
-export const navigate: Tool = {
+export const saveCookies: Tool = {
   schema: {
-    name: 'navigate',
-    description: 'Navigate to a URL',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        url: {
-          type: 'string',
-          description: 'URL to navigate to',
-        },
-      },
+    name: 'browser_save_cookies',
+    description: 'Save the cookies to a file',
+    inputSchema: zodToJsonSchema(saveCookiesSchema)
+  },
+  handle: async (context, params) => {
+    try {
+      const validatedParams = saveCookiesSchema.parse(params);
+      const page = await context.createPage();
+  
+      const cookies = await page.context().cookies();
+  
+      const savedCookiesPath = path.resolve(validatedParams.cookiesPath);
+      await fs.writeFile(savedCookiesPath, JSON.stringify(cookies, null, 2));
+  
+      return {
+        content: [{
+          type: 'text',
+          text: `Cookies saved to ${savedCookiesPath}`,
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: `Failed to save cookies: ${err}`,
+        }],
+        isError: true,
+      };
     }
   },
+};
 
+const navigateSchema = z.object({
+  url: z.string().describe('The URL to navigate to'),
+  cookiesPath: z.string().optional().describe('[Optional] The path to the cookies.json file'),
+});
+
+export const navigate: ToolFactory = snapshot => ({
+  schema: {
+    name: 'browser_navigate',
+    description: 'Navigate to a URL',
+    inputSchema: zodToJsonSchema(navigateSchema),
+  },
   handle: async (context, params) => {
-    await waitForCompletion(context.page, async () => {
-      await context.page.goto(params!.url as string);
-    });
+    const validatedParams = navigateSchema.parse(params);
+    const page = await context.createPage();
+    
+    if (validatedParams.cookiesPath) {
+      try {
+        const cookies = JSON.parse(
+          await fs.readFile(validatedParams.cookiesPath, 'utf-8')
+        );
+        await page.context().addCookies(cookies);
+      } catch (err) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Failed to load cookies from ${validatedParams.cookiesPath}: ${err}`,
+          }],
+          isError: true,
+        };
+      }
+    }
+    
+    await page.goto(validatedParams.url, { waitUntil: 'domcontentloaded' });
+    // Cap load event to 5 seconds, the page is operational at this point.
+    await page.waitForLoadState('load', { timeout: 5000 }).catch(() => {});
+    if (snapshot)
+      return captureAriaSnapshot(context);
     return {
       content: [{
         type: 'text',
-        text: `Navigated to ${params!.url}`,
+        text: `Navigated to ${validatedParams.url}`,
       }],
     };
-  }
-};
+  },
+});
+
+// const navigateSchema = z.object({
+//   url: z.string().describe('The URL to navigate to'),
+// });
+
+// export const navigate: ToolFactory = snapshot => ({
+//   schema: {
+//     name: 'browser_navigate',
+//     description: 'Navigate to a URL',
+//     inputSchema: zodToJsonSchema(navigateSchema),
+//   },
+//   handle: async (context, params) => {
+//     const validatedParams = navigateSchema.parse(params);
+//     const page = await context.createPage();
+//     await page.goto(validatedParams.url, { waitUntil: 'domcontentloaded' });
+//     // Cap load event to 5 seconds, the page is operational at this point.
+//     await page.waitForLoadState('load', { timeout: 5000 }).catch(() => {});
+//     if (snapshot)
+//       return captureAriaSnapshot(context);
+//     return {
+//       content: [{
+//         type: 'text',
+//         text: `Navigated to ${validatedParams.url}`,
+//       }],
+//     };
+//   },
+// });
+
+const goBackSchema = z.object({});
+
+export const goBack: ToolFactory = snapshot => ({
+  schema: {
+    name: 'browser_go_back',
+    description: 'Go back to the previous page',
+    inputSchema: zodToJsonSchema(goBackSchema),
+  },
+  handle: async context => {
+    return await runAndWait(context, 'Navigated back', async page => page.goBack(), snapshot);
+  },
+});
+
+const goForwardSchema = z.object({});
+
+export const goForward: ToolFactory = snapshot => ({
+  schema: {
+    name: 'browser_go_forward',
+    description: 'Go forward to the next page',
+    inputSchema: zodToJsonSchema(goForwardSchema),
+  },
+  handle: async context => {
+    return await runAndWait(context, 'Navigated forward', async page => page.goForward(), snapshot);
+  },
+});
+
+const waitSchema = z.object({
+  time: z.number().describe('The time to wait in seconds'),
+});
 
 export const wait: Tool = {
   schema: {
-    name: 'wait',
-    description: `Wait for given amount of time to see if the page updates. Use it after action if you think page is not ready yet`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        time: {
-          type: 'integer',
-          description: 'Time to wait in seconds',
-        },
-      },
-      required: ['time'],
-    }
+    name: 'browser_wait',
+    description: 'Wait for a specified time in seconds',
+    inputSchema: zodToJsonSchema(waitSchema),
   },
-
   handle: async (context, params) => {
-    await context.page.waitForTimeout(Math.min(10000, params!.time as number * 1000));
+    const validatedParams = waitSchema.parse(params);
+    await new Promise(f => setTimeout(f, Math.min(10000, validatedParams.time * 1000)));
     return {
       content: [{
         type: 'text',
-        text: `Waited for ${params!.time} seconds`,
+        text: `Waited for ${validatedParams.time} seconds`,
       }],
     };
-  }
+  },
 };
+
+const pressKeySchema = z.object({
+  key: z.string().describe('Name of the key to press or a character to generate, such as `ArrowLeft` or `a`'),
+});
 
 export const pressKey: Tool = {
   schema: {
-    name: 'press_key',
-    description: 'Press a key',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        key: {
-          type: 'string',
-          description: 'Name of the key to press or a character to generate, such as `ArrowLeft` or `a`',
-        },
-      },
-      required: ['key'],
-    }
+    name: 'browser_press_key',
+    description: 'Press a key on the keyboard',
+    inputSchema: zodToJsonSchema(pressKeySchema),
   },
-
   handle: async (context, params) => {
-    await waitForCompletion(context.page, async () => {
-      await context.page.keyboard.press(params!.key as string);
+    const validatedParams = pressKeySchema.parse(params);
+    return await runAndWait(context, `Pressed key ${validatedParams.key}`, async page => {
+      await page.keyboard.press(validatedParams.key);
     });
+  },
+};
+
+const pdfSchema = z.object({});
+
+export const pdf: Tool = {
+  schema: {
+    name: 'browser_save_as_pdf',
+    description: 'Save page as PDF',
+    inputSchema: zodToJsonSchema(pdfSchema),
+  },
+  handle: async context => {
+    const page = context.existingPage();
+    const fileName = path.join(os.tmpdir(), sanitizeForFilePath(`page-${new Date().toISOString()}`)) + '.pdf';
+    await page.pdf({ path: fileName });
     return {
       content: [{
         type: 'text',
-        text: `Pressed key ${params!.key}`,
+        text: `Saved as ${fileName}`,
       }],
     };
-  }
+  },
+};
+
+const closeSchema = z.object({});
+
+export const close: Tool = {
+  schema: {
+    name: 'browser_close',
+    description: 'Close the page',
+    inputSchema: zodToJsonSchema(closeSchema),
+  },
+  handle: async context => {
+    await context.close();
+    return {
+      content: [{
+        type: 'text',
+        text: `Page closed`,
+      }],
+    };
+  },
+};
+
+const chooseFileSchema = z.object({
+  paths: z.array(z.string()).describe('The absolute paths to the files to upload. Can be a single file or multiple files.'),
+});
+
+export const chooseFile: ToolFactory = snapshot => ({
+  schema: {
+    name: 'browser_choose_file',
+    description: 'Choose one or multiple files to upload',
+    inputSchema: zodToJsonSchema(chooseFileSchema),
+  },
+  handle: async (context, params) => {
+    const validatedParams = chooseFileSchema.parse(params);
+    return await runAndWait(context, `Chose files ${validatedParams.paths.join(', ')}`, async () => {
+      await context.submitFileChooser(validatedParams.paths);
+    }, snapshot);
+  },
+});
+
+export const install: Tool = {
+  schema: {
+    name: 'browser_install',
+    description: 'Install the browser specified in the config. Call this if you get an error about the browser not being installed.',
+    inputSchema: zodToJsonSchema(z.object({})),
+  },
+  handle: async context => {
+    const channel = await context.install();
+    return {
+      content: [{
+        type: 'text',
+        text: `Browser ${channel} installed`,
+      }],
+    };
+  },
 };

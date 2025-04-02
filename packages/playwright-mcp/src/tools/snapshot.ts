@@ -14,139 +14,142 @@
  * limitations under the License.
  */
 
-import { waitForCompletion } from '../utils';
+import { z } from 'zod';
+import zodToJsonSchema from 'zod-to-json-schema';
+
+import { captureAriaSnapshot, runAndWait } from './utils';
 
 import type * as playwright from 'playwright';
-import type { Tool, ToolContext, ToolResult } from './common';
-
-const elementProperties = {
-  element: {
-    type: 'string',
-    description: 'Element label, description of any other text to describe the element',
-  },
-  ref: {
-    type: 'string',
-    description: 'Target element reference',
-  }
-};
+import type { Tool } from './tool';
 
 export const snapshot: Tool = {
   schema: {
-    name: 'snapshot',
+    name: 'browser_snapshot',
     description: 'Capture accessibility snapshot of the current page, this is better than screenshot',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    }
+    inputSchema: zodToJsonSchema(z.object({})),
   },
 
   handle: async context => {
-    return await captureAriaSnapshot(context.page);
-  }
-};
-
-export const navigate: Tool = {
-  schema: {
-    name: 'navigate',
-    description: 'Navigate to a URL',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        url: {
-          type: 'string',
-          description: 'URL to navigate to',
-        },
-      },
-    }
+    return await captureAriaSnapshot(context);
   },
-
-  handle: async (context, params) => {
-    return runAndCaptureSnapshot(context, () => context.page.goto(params!.url));
-  }
 };
+
+const elementSchema = z.object({
+  element: z.string().describe('Human-readable element description used to obtain permission to interact with the element'),
+  ref: z.string().describe('Exact target element reference from the page snapshot'),
+});
 
 export const click: Tool = {
   schema: {
-    name: 'click',
+    name: 'browser_click',
     description: 'Perform click on a web page',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        ...elementProperties,
-      },
-      required: ['ref', 'element'],
-    }
+    inputSchema: zodToJsonSchema(elementSchema),
   },
 
   handle: async (context, params) => {
-    const locator = refLocator(context.page, params!);
-    return runAndCaptureSnapshot(context, () => locator.click());
-  }
+    const validatedParams = elementSchema.parse(params);
+    return runAndWait(context, `"${validatedParams.element}" clicked`, () => context.refLocator(validatedParams.ref).click(), true);
+  },
+};
+
+const dragSchema = z.object({
+  startElement: z.string().describe('Human-readable source element description used to obtain the permission to interact with the element'),
+  startRef: z.string().describe('Exact source element reference from the page snapshot'),
+  endElement: z.string().describe('Human-readable target element description used to obtain the permission to interact with the element'),
+  endRef: z.string().describe('Exact target element reference from the page snapshot'),
+});
+
+export const drag: Tool = {
+  schema: {
+    name: 'browser_drag',
+    description: 'Perform drag and drop between two elements',
+    inputSchema: zodToJsonSchema(dragSchema),
+  },
+
+  handle: async (context, params) => {
+    const validatedParams = dragSchema.parse(params);
+    return runAndWait(context, `Dragged "${validatedParams.startElement}" to "${validatedParams.endElement}"`, async () => {
+      const startLocator = context.refLocator(validatedParams.startRef);
+      const endLocator = context.refLocator(validatedParams.endRef);
+      await startLocator.dragTo(endLocator);
+    }, true);
+  },
 };
 
 export const hover: Tool = {
   schema: {
-    name: 'hover',
+    name: 'browser_hover',
     description: 'Hover over element on page',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        ...elementProperties,
-      },
-      required: ['ref', 'element'],
-    }
+    inputSchema: zodToJsonSchema(elementSchema),
   },
 
   handle: async (context, params) => {
-    const locator = refLocator(context.page, params!);
-    return runAndCaptureSnapshot(context, () => locator.hover());
-  }
+    const validatedParams = elementSchema.parse(params);
+    return runAndWait(context, `Hovered over "${validatedParams.element}"`, () => context.refLocator(validatedParams.ref).hover(), true);
+  },
 };
+
+const typeSchema = elementSchema.extend({
+  text: z.string().describe('Text to type into the element'),
+  submit: z.boolean().describe('Whether to submit entered text (press Enter after)'),
+});
 
 export const type: Tool = {
   schema: {
-    name: 'type',
+    name: 'browser_type',
     description: 'Type text into editable element',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        ...elementProperties,
-        text: {
-          type: 'string',
-          description: 'Text to enter',
-        },
-        submit: {
-          type: 'boolean',
-          description: 'Whether to submit entered text (press Enter after)'
-        }
-      },
-      required: ['ref', 'element', 'text'],
-    }
+    inputSchema: zodToJsonSchema(typeSchema),
   },
 
   handle: async (context, params) => {
-    const locator = refLocator(context.page, params!);
-    return await runAndCaptureSnapshot(context, async () => {
-      locator.fill(params!.text as string);
-      if (params!.submit)
+    const validatedParams = typeSchema.parse(params);
+    return await runAndWait(context, `Typed "${validatedParams.text}" into "${validatedParams.element}"`, async () => {
+      const locator = context.refLocator(validatedParams.ref);
+      await locator.fill(validatedParams.text);
+      if (validatedParams.submit)
         await locator.press('Enter');
-    });
-  }
+    }, true);
+  },
 };
 
-function refLocator(page: playwright.Page, params: Record<string, string>): playwright.Locator {
-  return page.locator(`aria-ref=${params.ref}`);
-}
+const selectOptionSchema = elementSchema.extend({
+  values: z.array(z.string()).describe('Array of values to select in the dropdown. This can be a single value or multiple values.'),
+});
 
-async function runAndCaptureSnapshot(context: ToolContext, callback: () => Promise<any>): Promise<ToolResult> {
-  const page = context.page;
-  await waitForCompletion(page, () => callback());
-  return captureAriaSnapshot(page);
-}
+export const selectOption: Tool = {
+  schema: {
+    name: 'browser_select_option',
+    description: 'Select an option in a dropdown',
+    inputSchema: zodToJsonSchema(selectOptionSchema),
+  },
 
-async function captureAriaSnapshot(page: playwright.Page): Promise<ToolResult> {
-  const snapshot = await page.locator('html').ariaSnapshot({ ref: true });
-  return {
-    content: [{ type: 'text', text: `# Current page snapshot\n${snapshot}` }],
-  };
-}
+  handle: async (context, params) => {
+    const validatedParams = selectOptionSchema.parse(params);
+    return await runAndWait(context, `Selected option in "${validatedParams.element}"`, async () => {
+      const locator = context.refLocator(validatedParams.ref);
+      await locator.selectOption(validatedParams.values);
+    }, true);
+  },
+};
+
+const screenshotSchema = z.object({
+  raw: z.boolean().optional().describe('Whether to return without compression (in PNG format). Default is false, which returns a JPEG image.'),
+});
+
+export const screenshot: Tool = {
+  schema: {
+    name: 'browser_take_screenshot',
+    description: `Take a screenshot of the current page. You can't perform actions based on the screenshot, use browser_snapshot for actions.`,
+    inputSchema: zodToJsonSchema(screenshotSchema),
+  },
+
+  handle: async (context, params) => {
+    const validatedParams = screenshotSchema.parse(params);
+    const page = context.existingPage();
+    const options: playwright.PageScreenshotOptions = validatedParams.raw ? { type: 'png', scale: 'css' } : { type: 'jpeg', quality: 50, scale: 'css' };
+    const screenshot = await page.screenshot(options);
+    return {
+      content: [{ type: 'image', data: screenshot.toString('base64'), mimeType: validatedParams.raw ? 'image/png' : 'image/jpeg' }],
+    };
+  },
+};

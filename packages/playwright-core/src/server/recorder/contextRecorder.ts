@@ -265,7 +265,7 @@ export class ContextRecorder extends EventEmitter {
       const now = Date.now();
       // Skip if we just took a snapshot (within last 2 seconds)
       if (now - this._lastSnapshotTimestamp < this._snapshotTimeGap) {
-        console.log('_performAction:  skipping the snapshot one');
+        // console.log('_performAction:  skipping the snapshot one');
         return;
       }
       this._lastSnapshotTimestamp = Date.now();

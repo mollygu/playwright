@@ -218,6 +218,52 @@ playwright codegen --device="iPhone 13" playwright.dev
 ```bash csharp
 pwsh bin/Debug/netX/playwright.ps1 codegen --device="iPhone 13" playwright.dev
 ```
+
+### Connect to an existing browser
+
+You can connect to an existing Chrome or Chromium browser instance that has been started with remote debugging enabled using the `--cdp-endpoint` option. This can be useful when you want to:
+
+- Record tests on a browser with specific extensions or configurations
+- Generate code for a browser that's already authenticated or in a specific state
+- Test in an environment where launching new browsers is restricted
+
+First, start Chrome/Chromium with remote debugging enabled on a specific port:
+
+```bash
+# On macOS
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+
+# On Windows
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+
+# On Linux
+google-chrome --remote-debugging-port=9222
+```
+
+Then run the codegen command with the CDP endpoint (Chromium only):
+
+```bash js
+npx playwright codegen --cdp-endpoint=http://localhost:9222/ playwright.dev
+```
+
+```bash java
+mvn exec:java -e -D exec.mainClass=com.microsoft.playwright.CLI -D exec.args="codegen --cdp-endpoint=http://localhost:9222/ playwright.dev"
+```
+
+```bash python
+playwright codegen --cdp-endpoint=http://localhost:9222/ playwright.dev
+```
+
+```bash csharp
+pwsh bin/Debug/netX/playwright.ps1 codegen --cdp-endpoint=http://localhost:9222/ playwright.dev
+```
+
+You can also connect to the WebSocket endpoint directly:
+
+```bash js
+npx playwright codegen --cdp-endpoint=ws://127.0.0.1:9222/devtools/browser/[id] playwright.dev
+```
+
 ######
 * langs: js
 

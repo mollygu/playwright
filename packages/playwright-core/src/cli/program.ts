@@ -71,6 +71,7 @@ commandWithOpenOptions('codegen [url]', 'open page and generate code for user ac
       ['--target <language>', `language to generate, one of javascript, playwright-test, python, python-async, python-pytest, csharp, csharp-mstest, csharp-nunit, java, java-junit`, codegenId()],
       ['--test-id-attribute <attributeName>', 'use the specified attribute to generate data test ID selectors'],
       ['--snapshots-dir <dir>', 'directory to save page snapshots during recording'],
+      ['--cdp-endpoint <url>', 'connect to an existing browser via CDP endpoint URL (chromium only)'],
     ]).action(function(url, options) {
   codegen(options, url).catch(logErrorAndExit);
 }).addHelpText('afterAll', `
@@ -79,7 +80,8 @@ Examples:
   $ codegen
   $ codegen --target=python
   $ codegen -b webkit https://example.com
-  $ codegen --snapshots-dir=snapshots`);
+  $ codegen --snapshots-dir=snapshots
+  $ codegen --cdp-endpoint=http://localhost:9222/`);
 
 function suggestedBrowsersToInstall() {
   return registry.executables().filter(e => e.installType !== 'none' && e.type !== 'tool').map(e => e.name).join(', ');
@@ -579,14 +581,83 @@ async function open(options: Options, url: string | undefined, language: string)
   await openPage(context, url);
 }
 
-async function codegen(options: Options & { target: string, output?: string, testIdAttribute?: string }, url: string | undefined) {
+async function codegen(options: Options & { target: string, output?: string, testIdAttribute?: string, cdpEndpoint?: string }, url: string | undefined) {
   const { target: language, output: outputFile, testIdAttribute: testIdAttributeName } = options;
   const tracesDir = path.join(os.tmpdir(), `playwright-recorder-trace-${Date.now()}`);
-  const { context, launchOptions, contextOptions } = await launchContext(options, {
-    headless: !!process.env.PWTEST_CLI_HEADLESS,
-    executablePath: process.env.PWTEST_CLI_EXECUTABLE_PATH,
-    tracesDir,
-  });
+  
+  let context: any;
+  let contextOptions: any;
+  let launchOptions: any;
+  let page: Page;
+  
+  if (options.cdpEndpoint) {
+    if (options.browser !== 'chromium') {
+      console.error('Connecting over CDP is only supported in Chromium.');
+      gracefullyProcessExitDoNotHang(1);
+      return;
+    }
+    
+    // Connect to an existing browser via CDP
+    const browserType = lookupBrowserType(options);
+    try {
+      const browser = await browserType.connectOverCDP(options.cdpEndpoint);
+      // Get the first context
+      const contexts = browser.contexts();
+      if (contexts.length === 0) {
+        console.error('No browser contexts found in the connected browser.');
+        gracefullyProcessExitDoNotHang(1);
+        return;
+      }
+      
+      context = contexts[0];
+      contextOptions = {}; // We don't know the actual options, but they don't matter for recording
+      launchOptions = {
+        headless: false,
+        executablePath: process.env.PWTEST_CLI_EXECUTABLE_PATH,
+      };
+      
+      // Use existing page or create a new one
+      const pages = context.pages();
+      if (pages.length > 0) {
+        page = pages[0];
+        if (url) {
+          if (fs.existsSync(url))
+            url = 'file://' + path.resolve(url);
+          else if (!url.startsWith('http') && !url.startsWith('file://') && !url.startsWith('about:') && !url.startsWith('data:'))
+            url = 'http://' + url;
+          
+          console.log('Navigating to ' + url);
+          await page.goto(url).catch(error => {
+            if (process.env.PWTEST_CLI_AUTO_EXIT_WHEN) {
+              // Tests with PWTEST_CLI_AUTO_EXIT_WHEN might close page too fast, resulting
+              // in a stray navigation aborted error. We should ignore it.
+            } else {
+              throw error;
+            }
+          });
+        }
+      } else {
+        // No pages in the context, create one
+        page = await openPage(context, url);
+      }
+    } catch (error) {
+      console.error(`Failed to connect to CDP endpoint: ${error}`);
+      gracefullyProcessExitDoNotHang(1);
+      return;
+    }
+  } else {
+    // Launch a new browser as before
+    const result = await launchContext(options, {
+      headless: !!process.env.PWTEST_CLI_HEADLESS,
+      executablePath: process.env.PWTEST_CLI_EXECUTABLE_PATH,
+      tracesDir,
+    });
+    context = result.context;
+    launchOptions = result.launchOptions;
+    contextOptions = result.contextOptions;
+    page = await openPage(context, url);
+  }
+  
   dotenv.config({ path: 'playwright.env' });
   await context._enableRecorder({
     language,
@@ -600,7 +671,6 @@ async function codegen(options: Options & { target: string, output?: string, tes
     handleSIGINT: false,
     snapshotsDir: options.snapshotsDir,
   });
-  await openPage(context, url);
 }
 
 async function waitForPage(page: Page, captureOptions: CaptureOptions) {

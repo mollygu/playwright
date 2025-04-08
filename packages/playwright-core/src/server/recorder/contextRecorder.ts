@@ -260,7 +260,7 @@ export class ContextRecorder extends EventEmitter {
     await new Promise(resolve => setTimeout(resolve, 1500));
     
     const afterState = await this._capturePageState(frame);
-    console.log('Now comparing state to decide if snapshot is needed');
+    // console.log('Now comparing state to decide if snapshot is needed');
     if (this._hasStateChanged(beforeState, afterState)) {
       const now = Date.now();
       // Skip if we just took a snapshot (within last 2 seconds)
@@ -269,7 +269,7 @@ export class ContextRecorder extends EventEmitter {
         return;
       }
       this._lastSnapshotTimestamp = Date.now();
-      console.log('_performAction:  taking the snapshot');
+      // console.log('_performAction:  taking the snapshot');
       await this._savePageSnapshot(frame, action);
     }
   }
@@ -334,6 +334,10 @@ export class ContextRecorder extends EventEmitter {
   }
 
   private async _savePageSnapshot(frame: Frame, action: actions.Action, prefix?: string) {
+    if (!this._params.snapshotsDir) {
+      return;
+    }
+
     try {
       console.log('Saving page snapshot for:', action.name+'-->');
       const page = frame._page;
@@ -422,11 +426,11 @@ export class ContextRecorder extends EventEmitter {
         // Skip if we just took a snapshot from _performAction (within last 2 seconds)
         if (now - this._lastSnapshotTimestamp < this._snapshotTimeGap) {
             //Naviaget snapshot can happen both in _performAction and _onFrameNavigated,
-            console.log('_onFrameNavigated:  skipping the snapshot one');
+            // console.log('_onFrameNavigated:  skipping the snapshot one');
             return;
         }
-        console.log('Navigated to:', frame.url());
-        console.log('Capturing page state on navigation to:', frame.url());
+        // console.log('Navigated to:', frame.url());
+        // console.log('Capturing page state on navigation to:', frame.url());
         this._lastSnapshotTimestamp = now;
 
         const currentAction: actions.Action = {

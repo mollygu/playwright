@@ -356,6 +356,13 @@ export class ContextRecorder extends EventEmitter {
       
       // Add action name to the filename for better identification
       actionDescription = `-${action.name}`;
+      if ('selector' in action && action.selector) {
+        // Include shortened selector in the action description for better identification
+        const shortSelector = action.selector.length > 30 
+          ? action.selector.substring(0, 30).replace(/[^a-zA-Z0-9]/g, '_') + '...' 
+          : action.selector.replace(/[^a-zA-Z0-9]/g, '_');
+        actionDescription += `-${shortSelector}`;
+      }
       actionNumber = `${paddedCounter}${actionDescription}`;
       
       // Use the snapshotsDir parameter if provided, otherwise use default "playwright-snapshots"
@@ -376,10 +383,20 @@ export class ContextRecorder extends EventEmitter {
       fs.writeFileSync(screenshotPath, screenshotBuffer);
       console.log(`  Saved page snapshot for ${action.name} to ${snapshotDir}/${actionNumber}-${timestamp}.png`);
 
-      // Capture and save aria snapshot
+      // Capture and save aria snapshot with enhanced formatting
       const ariaSnapshot = await frame.ariaSnapshot(metadata, 'html', { ref: true });
+      
+      // Add informative header with action details
+      let ariaContent = `# Accessibility Snapshot for "${action.name}" action\n`;
+      ariaContent += `# Timestamp: ${new Date().toISOString()}\n`;
+      if ('selector' in action && action.selector) {
+        ariaContent += `# Target selector: ${action.selector}\n`;
+      }
+      ariaContent += `# URL: ${page.mainFrame().url()}\n`;
+      ariaContent += `\n${ariaSnapshot}`;
+      
       const ariaPath = path.join(snapshotDir, `${actionNumber}-${timestamp}.aria.txt`);
-      fs.writeFileSync(ariaPath, ariaSnapshot);
+      fs.writeFileSync(ariaPath, ariaContent);
       
       console.log(`  Saved page snapshot for ${action.name} to ${snapshotDir}/${actionNumber}-${timestamp}.aria.txt`);
 
@@ -388,8 +405,6 @@ export class ContextRecorder extends EventEmitter {
       const htmlPath = path.join(snapshotDir, `${actionNumber}-${timestamp}.html`);
       fs.writeFileSync(htmlPath, content);
       console.log(`  Saved page snapshot for ${action.name} to ${snapshotDir}/${actionNumber}-${timestamp}.html`);
-
-      
     } catch (error) {
       console.error('Error saving page snapshot:', error);
     }
